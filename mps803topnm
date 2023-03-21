@@ -1,0 +1,90 @@
+#!/usr/bin/perl
+#
+# turn 1525 graphics data into a PNM
+# DOES NOT WORK WITH VICE YET, some characters are omitted from VICE's output
+# (c)2023 cameron kaiser. all rights reserved. bsd license.
+
+select(STDOUT); $|++;
+
+$buf = '';
+@pm = ();
+
+undef $/;
+# each turn of the loop gets a file or the entirety of stdin
+# use hex to ensure no skulduggery
+while(<>) { $buf .= unpack("H*", $_); }
+
+# pre-process control codes
+$gm = 0;
+$line = 0;
+$x = 0;
+for($k=0;$k<length($buf);$k+=2) {
+	$a = hex(substr($buf,$k,2));
+
+	if ($a == 13) {
+		$line++;
+		next;
+	}
+	if ($a == 15) {
+		$gm = 0;
+		next;
+	}
+	if ($a == 8) {
+		$gm = 1;
+		next;
+	}
+	next if ($a == 20); # politely ignore
+
+	if ($a == 26) {
+		die "got repeat byte\n";
+	}
+	
+	if (!$gm || (!($a & 128))) {
+		warn "unexpected byte $a\n";
+		next;
+	}
+
+	push(@{ $pm[$line] }, $a & 127);
+}
+
+# compute maximal dimensions
+$y = scalar(@pm) * 7;
+foreach(@pm) {
+	$line++;
+	$g = scalar(@{ $_ });
+	$x = $g if ($x < $g);
+}
+
+# emit as P4 pbm
+print STDOUT "P4\n$x $y\n";
+$bbl = ($x >> 3);
+$bbl++ if ($x & 7);
+
+foreach(@pm) {
+	@k = @{ $_ };
+
+	# emit seven rows for each byte of data
+	for($i=1;$i<128;$i<<=1) {
+		$bytout = 0;
+		$bitout = 128; # msb is leftmost bit
+		$bytsout = 0;
+		foreach $e (@k) {
+			$bytout |= $bitout if ($e & $i);
+			if ($bitout == 1) {
+				print STDOUT chr($bytout);
+				$bytout = 0;
+				$bitout = 128;
+				$bytsout++;
+			} else {
+				$bitout >>= 1;
+			}
+		}
+		# flush current byte
+		if ($bitout != 128) {
+			print STDOUT chr($bytout);
+			$bytsout++;
+		}
+		# flush line
+		print STDOUT (chr(0) x ($bbl - $bytsout)) if ($bytsout < $bbl);
+	}
+}

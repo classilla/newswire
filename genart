@@ -1,0 +1,191 @@
+#!/usr/bin/perl -s
+#
+# generate spanned Newsroom panels from a text file (see example/orig/ for
+# the basic format of text files as input). 
+#
+# (C)2023 cameron kaiser. all rights reserved. bsd license.
+#
+# specify filename template with -fn="filename" and spanned files are
+# filename0, filename1, etc. defaults to Commodore/Apple compatible
+# pn.panel*.
+#
+# known bugs:
+# - hardcoded to sans serif and sans serif font metrics
+# - doesn't handle accented characters/high-bit ISO-8859-1 or Unicode
+# - probably not perfectly efficient at packing
+
+$last = '';
+$obuf = '';
+$buf = '';
+$current = 0;
+$fn ||= "pn.panel";
+$lines = 0;
+@panel = ();
+# emit C64 panel header, sans serif large and small fonts
+@header = qw(0 160 255 255 1 1 255 255 0);
+
+$linesperpanel = 21;
+
+# in pixels
+# font metrics valid only for sans serif large and small fonts
+$slinelength = 38 * 6;
+$blinelength = 21 * 6; # relative to small font size: not 12
+
+use bytes; # remove for 5.005
+
+# add to output buffer
+sub out { $obuf .= shift; }
+
+# get length of string in pixels according to metrics
+sub len {
+	my $len = 0;
+	my $k = shift;
+	map {
+		$len += 
+	($_ eq '!' || $_ eq 'i' || $_ eq 'I' || $_ eq "'") ? 2 :
+	($_ eq '1' || $_ eq 'l' || $_ eq ':' || $_ eq ';' || $_ eq '.' || $_ eq ',') ? 3 :
+	($_ eq '(' || $_ eq ')' || $_ eq '"') ? 4 :
+	($_ eq ' ') ? 5 :
+	($_ eq '_') ? 8 :
+		6;
+	} split("", $k);
+	return $len;
+}
+
+# word wrap to a number of pixels and emit to output buffer
+sub wrap {
+	my $ll = shift;
+	my $kk = '';
+
+	$buf .= shift;
+	my $tag = shift;
+	while (length($buf)) {
+		my $x;
+		my $y;
+
+		# unpossible to get embedded lf, just check for spaces
+		$x = index($buf, " ");
+		if ($x > -1 && &len(substr($buf, 0, $x+1)) < $ll) {
+			$y = substr($buf, 0, $x+1); # include space
+			if (($x + 1) == length($buf)) {
+				$buf = '';
+			} else {
+				$buf = substr($buf, $x+1);
+			}
+		} else {
+			my $j = 0;
+			1 while(&len($y = substr($buf, 0, ++$j)) < $ll);
+			if (length($buf) == $j) {
+				$buf = '';
+			} else {
+				$buf = substr($buf, $j);
+			}
+		}
+		if (&len($kk . $y) > $ll) {
+			&out($tag . $kk."\n");
+			$kk = '';
+		}
+		$kk .= $y;
+	}
+	$buf = $kk . $buf;
+}
+
+# drain accumulated text from input buffer
+sub drain {
+	my $text = shift;
+	my $tag = shift;
+
+	&wrap($text, '', $tag);
+	&out($tag . $buf."\n");
+	$buf = '';
+}
+
+# word wrap article according to metrics
+# lines --------- turn prior line into large font
+
+while(<>) {
+	chomp;
+	1 while s/[\r]//sg;
+
+	if (/^\s*$/) {
+		# paragraph separator: drain and emit blank line
+		&wrap($slinelength, $last);
+		&drain($slinelength);
+		&out("\n");
+		$last = '';
+		next;
+	}
+
+	if (/^-+$/) {
+		# large font is tagged with \ (parsed in second phase)
+		&drain($slinelength);
+		&wrap($blinelength, $last, '\\');
+		&drain($blinelength, '\\');
+		$last = '';
+		next;
+	}
+
+	&wrap($slinelength, $last);
+	$last = $_ . " ";
+}
+&wrap($slinelength, $last);
+&drain($slinelength);
+
+# post-process output buffer, optimize linefeeds
+
+1 while $obuf =~ s/ +\n/\n/sg;
+1 while $obuf =~ s/\n\n\n/\n\n/sg;
+
+if ($k) {
+	print STDOUT $obuf;
+	exit;
+}
+
+# paginate output buffer into panels and convert to Newsroom format
+
+push(@panel, @header);
+foreach(split(/\n/, $obuf)) {
+	# Newsroom uses CR, not LF
+	&emit("$_\r");
+}
+&emit('', 1);
+
+sub emit {
+	my $text = shift;
+	my $done = shift;
+	# large font: double ysize, mark characters with high bit
+	my $ysize = ($text =~ s/^\\//) ? 2 : 1;
+	my $hb = ($ysize == 2) ? 128 : 0;
+
+	# panel is ending (or we're flushing)
+	if ($done || ($lines + $ysize) > $linesperpanel) {
+		# turn CR into EOT if last character
+		if ($panel[$#panel] == 13) {
+			$panel[$#panel] = 127;
+		} else {
+			push(@panel, 127);
+		}
+
+		# write length of current panel and do fixups
+		my $cl = scalar(@panel) - 9;
+		$panel[2] = $cl & 255;
+		$panel[3] = $cl >> 8;
+		$panel[6] = $panel[13];
+		$panel[7] = $panel[14];
+
+		# emit to file
+		open(W, ">${fn}${current}") || die("writing panel: $!\n");
+		foreach $b (@panel) { print W chr(0+$b) };
+		close(W);
+
+		return if ($done);
+
+		# new panel
+		$current++;
+		$lines = 0;
+		@panel = ();
+		push(@panel, @header);
+	}
+	$lines += $ysize;
+	push(@panel, map { ord($_) | $hb } split("", $text));
+}

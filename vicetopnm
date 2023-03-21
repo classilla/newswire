@@ -1,0 +1,71 @@
+#!/usr/bin/perl -s
+
+# turn newsroom page print into pbm, working around VICE printing glitches
+# (C)2023 cameron kaiser. all rights reserved. bsd license.
+#
+# settings:
+# printer file system access, mps-803 driver, text output
+
+# default: every 175 lines, burn the first six pixels of
+# the next seven lines, then burn the next seven lines after that, starting
+# with line zero and adding a fudge factor of eight to the
+# first (so lines 182, 357, etc.) pass -pp=0 to disable.
+$pp = 175 if (!defined($pp));
+$ps = 7 if (!defined($ps));
+
+$pt = 0;
+$len = 0;
+$line = 0;
+$acty = 0;
+@lines = ();
+while(<>) {
+	chomp;
+	die("unexpected character in line $line\n") if (/[^ *]/);
+	if (!$len) {
+		$len = length;
+		die("output isn't an integral multiple of eight: $len\n")
+			if ($len & 7);
+	} else {
+		die("line $line isn't length $len\n") if ($len != length);
+	}
+	if ($pp > 0 && $pt == $line) {
+print STDERR "!! $pt $line\n" if ($debug);
+		$ppa = 15;
+	}
+	$line++;
+	if ($ppa) {
+		$ppa--;
+		if ($ppa > 7) {
+			$_ = substr($_, 6); #. substr($_, 0, 6);
+print STDERR "<< $ppa $line @{[ length($_) ]} \"$lines[$line-1]\"<<\n" if ($debug);
+		} elsif ($ppa) {
+			$acty ||= scalar(@lines);
+			$lines[$acty - $ppa] .= substr($_, 0, 6);
+print STDERR "XX $ppa $lines @{[ $acty - $ppa ]} @{[ length($lines[$acty - $ppa]) ]}  \"$_\"\n" if ($debug);
+			next; # don't push
+		} else {
+			$pt += $pp;
+			$pt += $ps;
+			$ps = 0;
+			$acty = 0;
+		}
+	}
+	push(@lines, $_);
+}
+
+print STDOUT "P4\n$len ".scalar(@lines)."\n";
+foreach(@lines) {
+	$bytout = 0;
+	$bitout = 128; # big endian, as G-d intended
+	foreach $k (split("", $_)) {
+		$bytout |= $bitout if ($k ne ' ');
+		if ($bitout == 1) {
+			print STDOUT pack("C", $bytout);
+			$bitout = 128;
+			$bytout = 0;
+		} else {
+			$bitout >>= 1;
+		}
+	}
+}
+
